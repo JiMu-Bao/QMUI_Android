@@ -24,8 +24,13 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.qmuiteam.qmui.arch.QMUIFragment;
+import com.qmuiteam.qmui.arch.annotation.FloatArgument;
+import com.qmuiteam.qmui.arch.annotation.LatestVisitRecord;
+import com.qmuiteam.qmui.arch.annotation.LongArgument;
+import com.qmuiteam.qmui.arch.annotation.StringArgument;
 import com.qmuiteam.qmui.util.QMUIViewHelper;
 import com.qmuiteam.qmui.widget.QMUITopBarLayout;
 import com.qmuiteam.qmui.widget.dialog.QMUIBottomSheet;
@@ -44,6 +49,10 @@ import butterknife.ButterKnife;
 
 
 @Widget(name = "QMUIFragment", iconRes = R.mipmap.icon_grid_layout)
+@LatestVisitRecord
+@LongArgument(names = {"test_long", "test_long1", "test_long2", "test_long3"})
+@FloatArgument(names = "test_float")
+@StringArgument(names = "test_string")
 public class QDArchTestFragment extends BaseFragment {
     private static final String TAG = "QDArchTestFragment";
     private static final String ARG_INDEX = "arg_index";
@@ -91,7 +100,7 @@ public class QDArchTestFragment extends BaseFragment {
             @Override
             public void onClick(View v) {
                 popBackStack();
-                Intent intent = QDMainActivity.createArchTestIntent(getContext());
+                Intent intent = QDMainActivity.of(getContext(), QDArchTestFragment.class);
                 startActivity(intent);
             }
         });
@@ -105,6 +114,31 @@ public class QDArchTestFragment extends BaseFragment {
         Intent intent = new Intent();
         intent.putExtra(DATA_TEST, "test");
         setFragmentResult(RESULT_OK, intent);
+        Bundle arguments = getArguments();
+        if(arguments != null && arguments.getLong("test_long") == 100
+                && arguments.getLong("test_long1") == 1000
+                && arguments.getLong("test_long2") == 400
+                && arguments.getLong("test_long3", 200) == 200
+                && arguments.getFloat("test_float") == 100.13f
+                && "你好".equals(arguments.getString("test_string"))){
+            Toast.makeText(getContext(), "恢复到最近阅读(Muti)", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    public Object getArgumentValueForLatestVisit(String argumentName) {
+        if("test_long".equals(argumentName)){
+            return 100L;
+        }else if("test_float".equals(argumentName)){
+            return 100.13;
+        }else if("test_string".equals(argumentName)){
+            return "你好";
+        }else if("test_long1".equals(argumentName)){
+            return 1000;
+        }else if("test_long2".equals(argumentName)){
+            return 400;
+        }
+        return null;
     }
 
     public static QDArchTestFragment newInstance(int index) {
@@ -150,7 +184,7 @@ public class QDArchTestFragment extends BaseFragment {
                         }
 
                         if (position == 0) {
-                            Intent intent = QDMainActivity.createArchTestIntent(context);
+                            Intent intent = QDMainActivity.of(context, QDArchTestFragment.class);
                             context.startActivity(intent);
                         } else if (position == 1) {
                             Intent intent = QDMainActivity.createWebExplorerIntent(context,
@@ -158,7 +192,7 @@ public class QDArchTestFragment extends BaseFragment {
                                     context.getResources().getString(R.string.about_item_github));
                             context.startActivity(intent);
                         } else if (position == 2) {
-                            Intent intent = QDMainActivity.createSurfaceTestIntent(context);
+                            Intent intent = QDMainActivity.of(context, QDArchSurfaceTestFragment.class);
                             context.startActivity(intent);
                         } else if (position == 3) {
                             Intent intent = new Intent(context, ArchTestActivity.class);

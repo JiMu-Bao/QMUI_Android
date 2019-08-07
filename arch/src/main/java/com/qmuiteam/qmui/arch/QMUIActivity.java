@@ -17,6 +17,7 @@
 package com.qmuiteam.qmui.arch;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
 import android.support.annotation.Nullable;
 import android.util.Log;
@@ -61,7 +62,7 @@ public class QMUIActivity extends InnerBaseActivity {
             if (mSwipeBackgroundView != null) {
                 scrollPercent = Math.max(0f, Math.min(1f, scrollPercent));
                 int targetOffset = (int) (Math.abs(backViewInitOffset()) * (1 - scrollPercent));
-                SwipeBackLayout.offsetInScroll(mSwipeBackgroundView, edgeFlag, targetOffset);
+                SwipeBackLayout.offsetInSwipeBack(mSwipeBackgroundView, edgeFlag, targetOffset);
             }
         }
 
@@ -81,7 +82,7 @@ public class QMUIActivity extends InnerBaseActivity {
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 }
                 mSwipeBackgroundView.bind(prevActivity, QMUIActivity.this, restoreSubWindowWhenDragBack());
-                SwipeBackLayout.offsetInEdgeTouch(mSwipeBackgroundView, edgeFlag,
+                SwipeBackLayout.offsetInSwipeBack(mSwipeBackgroundView, edgeFlag,
                         Math.abs(backViewInitOffset()));
             }
         }
@@ -214,5 +215,26 @@ public class QMUIActivity extends InnerBaseActivity {
      */
     protected boolean restoreSubWindowWhenDragBack() {
         return true;
+    }
+
+    /**
+     * When finishing last activity, let activity have a chance to start a new Activity
+     *
+     * @return Intent to start a new Activity
+     */
+
+    public Intent onLastActivityFinish() {
+        return null;
+    }
+
+    @Override
+    public void finish() {
+        if (!QMUISwipeBackActivityManager.getInstance().canSwipeBack()) {
+            Intent intent = onLastActivityFinish();
+            if (intent != null) {
+                startActivity(intent);
+            }
+        }
+        super.finish();
     }
 }

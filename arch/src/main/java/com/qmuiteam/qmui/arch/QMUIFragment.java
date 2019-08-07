@@ -41,8 +41,14 @@ import android.view.animation.AnimationUtils;
 import android.widget.FrameLayout;
 
 import com.qmuiteam.qmui.QMUILog;
+import com.qmuiteam.qmui.arch.annotation.DefaultFirstFragment;
+import com.qmuiteam.qmui.arch.annotation.LatestVisitRecord;
+import com.qmuiteam.qmui.arch.first.FirstFragmentFinder;
+import com.qmuiteam.qmui.arch.first.FirstFragmentFinders;
+import com.qmuiteam.qmui.arch.record.LatestVisitArgumentSaver;
 import com.qmuiteam.qmui.util.QMUIKeyboardHelper;
 import com.qmuiteam.qmui.util.QMUIViewHelper;
+import com.qmuiteam.qmui.widget.QMUITopBar;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -56,8 +62,9 @@ import static com.qmuiteam.qmui.arch.SwipeBackLayout.EDGE_LEFT;
  * <p>
  * Created by cgspine on 15/9/14.
  */
-public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyLifecycleOwner.Callback {
-    private static final String SWIPE_BACK_VIEW = "swipe_back_view";
+public abstract class QMUIFragment extends Fragment implements
+        QMUIFragmentLazyLifecycleOwner.Callback, LatestVisitArgumentSaver {
+    static final String SWIPE_BACK_VIEW = "swipe_back_view";
     private static final String TAG = QMUIFragment.class.getSimpleName();
 
     protected static final TransitionConfig SLIDE_TRANSITION_CONFIG = new TransitionConfig(
@@ -96,7 +103,22 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
 
     private int mEnterAnimationStatus = ANIMATION_ENTER_STATUS_NOT_START;
     private boolean mCalled = true;
-    private ArrayList<Runnable> mDelayRenderRunnableList = new ArrayList<>();
+    private ArrayList<Runnable> mDelayRenderRunnableList;
+    private ArrayList<Runnable> mPostResumeRunnableList;
+    private Runnable mCheckPostResumeRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isResumed() && mPostResumeRunnableList != null) {
+                ArrayList<Runnable> list = mPostResumeRunnableList;
+                if (!list.isEmpty()) {
+                    for (Runnable runnable : list) {
+                        runnable.run();
+                    }
+                }
+                mPostResumeRunnableList = null;
+            }
+        }
+    };
     private QMUIFragmentLazyLifecycleOwner mLazyViewLifecycleOwner;
 
     public QMUIFragment() {
@@ -115,6 +137,50 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
     public void onDestroyView() {
         super.onDestroyView();
         mBaseView = null;
+        mEnterAnimationStatus = ANIMATION_ENTER_STATUS_NOT_START;
+    }
+
+    @Override
+    public void onResume() {
+        checkLatestVisitRecord();
+        super.onResume();
+        if (mBaseView != null && mPostResumeRunnableList != null && !mPostResumeRunnableList.isEmpty()) {
+            mBaseView.post(mCheckPostResumeRunnable);
+        }
+    }
+
+    private void checkLatestVisitRecord() {
+        Class<? extends QMUIFragment> cls = getClass();
+        Activity activity = getActivity();
+        if(getParentFragment() != null || !(activity instanceof QMUIFragmentActivity)){
+            return;
+        }
+        if (!cls.isAnnotationPresent(LatestVisitRecord.class)) {
+            QMUILatestVisit.getInstance(getContext()).clearFragmentLatestVisitRecord();
+            return;
+        }
+        if (!activity.getClass().isAnnotationPresent(LatestVisitRecord.class)) {
+            throw new RuntimeException(String.format("Can not perform LatestVisitRecord, " +
+                    "%s must be annotated by LatestVisitRecord", activity.getClass().getSimpleName()));
+        }
+        if (activity.getClass().getAnnotation(DefaultFirstFragment.class) != null) {
+            QMUILatestVisit.getInstance(getContext()).performLatestVisitRecord(this);
+        } else {
+            QMUIFragmentActivity qActivity = (QMUIFragmentActivity) activity;
+            int id = FirstFragmentFinders.getInstance().get(qActivity.getClass()).getIdByFragmentClass(cls);
+            if (id == FirstFragmentFinder.NO_ID) {
+                throw new RuntimeException(String.format("Can not perform LatestVisitRecord, " +
+                                "%s must be annotated by FirstFragments which contains %s",
+                        activity.getClass().getSimpleName(), cls.getSimpleName()));
+            }
+            QMUILatestVisit.getInstance(getContext()).performLatestVisitRecord(this);
+        }
+    }
+
+
+    @Override
+    public Object getArgumentValueForLatestVisit(String argumentName) {
+        return null;
     }
 
     protected void startFragmentAndDestroyCurrent(QMUIFragment fragment) {
@@ -124,11 +190,11 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
     /**
      * see {@link QMUIFragmentActivity#startFragmentAndDestroyCurrent(QMUIFragment, boolean)}
      *
-     * @param fragment new fragment to start
+     * @param fragment                      new fragment to start
      * @param useNewTransitionConfigWhenPop
      */
     protected void startFragmentAndDestroyCurrent(QMUIFragment fragment, boolean useNewTransitionConfigWhenPop) {
-        if(!checkStateLoss("startFragmentAndDestroyCurrent")){
+        if (!checkStateLoss("startFragmentAndDestroyCurrent")) {
             return;
         }
         if (getTargetFragment() != null) {
@@ -150,7 +216,7 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
     }
 
     protected void startFragment(QMUIFragment fragment) {
-        if(!checkStateLoss("startFragment")){
+        if (!checkStateLoss("startFragment")) {
             return;
         }
         QMUIFragmentActivity baseFragmentActivity = this.getBaseFragmentActivity();
@@ -175,7 +241,7 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
      * @param requestCode request code
      */
     public void startFragmentForResult(QMUIFragment fragment, int requestCode) {
-        if(!checkStateLoss("startFragmentForResult")){
+        if (!checkStateLoss("startFragmentForResult")) {
             return;
         }
         if (requestCode == NO_REQUEST_CODE) {
@@ -250,6 +316,9 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
+        if (mBaseView.getTag(R.id.qmui_arch_reused_layout) == null) {
+            onViewCreated(mBaseView);
+        }
         mLazyViewLifecycleOwner = new QMUIFragmentLazyLifecycleOwner(this);
         mLazyViewLifecycleOwner.setViewVisible(getUserVisibleHint());
         getViewLifecycleOwner().getLifecycle().addObserver(mLazyViewLifecycleOwner);
@@ -285,6 +354,7 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
             if (rootView.getParent() != null) {
                 ((ViewGroup) rootView.getParent()).removeView(rootView);
             }
+            rootView.setTag(R.id.qmui_arch_reused_layout, true);
         }
         if (translucentFull()) {
             rootView.setFitsSystemWindows(false);
@@ -364,26 +434,29 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
                     Utils.findAndModifyOpInBackStackRecord(fragmentManager, -1, new Utils.OpHandler() {
                         @Override
                         public boolean handle(Object op) {
-                            Field cmdField;
+                            Field cmdField = Utils.getOpCmdField(op);
+                            if (cmdField == null) {
+                                return false;
+                            }
                             try {
-                                cmdField = op.getClass().getDeclaredField("cmd");
                                 cmdField.setAccessible(true);
                                 int cmd = (int) cmdField.get(op);
                                 if (cmd == 1) {
-                                    Field popEnterAnimField = op.getClass().getDeclaredField("popExitAnim");
-                                    popEnterAnimField.setAccessible(true);
-                                    popEnterAnimField.set(op, 0);
+                                    Field popEnterAnimField = Utils.getOpPopExitAnimField(op);
+                                    if (popEnterAnimField != null) {
+                                        popEnterAnimField.setAccessible(true);
+                                        popEnterAnimField.set(op, 0);
+                                    }
                                 } else if (cmd == 3) {
-                                    Field popExitAnimField = op.getClass().getDeclaredField("popEnterAnim");
-                                    popExitAnimField.setAccessible(true);
-                                    popExitAnimField.set(op, 0);
+                                    Field popExitAnimField = Utils.getOpPopEnterAnimField(op);
+                                    if (popExitAnimField != null) {
+                                        popExitAnimField.setAccessible(true);
+                                        popExitAnimField.set(op, 0);
+                                    }
                                 }
-                            } catch (NoSuchFieldException e) {
-                                e.printStackTrace();
                             } catch (IllegalAccessException e) {
                                 e.printStackTrace();
                             }
-
                             return false;
                         }
 
@@ -412,17 +485,17 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
                 View view = container.getChildAt(i);
                 Object tag = view.getTag(R.id.qmui_arch_swipe_layout_in_back);
                 if (SWIPE_BACK_VIEW.equals(tag)) {
-                    SwipeBackLayout.offsetInScroll(view, edgeFlag, targetOffset);
+                    SwipeBackLayout.offsetInSwipeBack(view, edgeFlag, targetOffset);
                 }
             }
             if (mSwipeBackgroundView != null) {
-                SwipeBackLayout.offsetInScroll(mSwipeBackgroundView, edgeFlag, targetOffset);
+                SwipeBackLayout.offsetInSwipeBack(mSwipeBackgroundView, edgeFlag, targetOffset);
             }
         }
 
         @SuppressLint("PrivateApi")
         @Override
-        public void onEdgeTouch(int edgeFlag) {
+        public void onEdgeTouch(final int edgeFlag) {
             Log.i(TAG, "SwipeListener:onEdgeTouch: edgeFlag = " + edgeFlag);
             FragmentManager fragmentManager = getFragmentManager();
             if (fragmentManager == null) {
@@ -432,49 +505,59 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
             onDragStart();
             int backStackCount = fragmentManager.getBackStackEntryCount();
             if (backStackCount > 1) {
-                try {
-                    FragmentManager.BackStackEntry backStackEntry = fragmentManager.getBackStackEntryAt(backStackCount - 1);
-
-                    Field opsField = backStackEntry.getClass().getDeclaredField("mOps");
-                    opsField.setAccessible(true);
-                    Object opsObj = opsField.get(backStackEntry);
-                    if (opsObj instanceof List<?>) {
-                        List<?> ops = (List<?>) opsObj;
-                        for (Object op : ops) {
-                            Field cmdField = op.getClass().getDeclaredField("cmd");
+                Utils.findAndModifyOpInBackStackRecord(fragmentManager, -1, new Utils.OpHandler() {
+                    @Override
+                    public boolean handle(Object op) {
+                        Field cmdField = Utils.getOpCmdField(op);
+                        if (cmdField == null) {
+                            return false;
+                        }
+                        try {
                             cmdField.setAccessible(true);
                             int cmd = (int) cmdField.get(op);
                             if (cmd == 3) {
-                                Field popEnterAnimField = op.getClass().getDeclaredField("popEnterAnim");
-                                popEnterAnimField.setAccessible(true);
-                                popEnterAnimField.set(op, 0);
+                                Field popEnterAnimField = Utils.getOpPopEnterAnimField(op);
+                                if (popEnterAnimField != null) {
+                                    popEnterAnimField.setAccessible(true);
+                                    popEnterAnimField.set(op, 0);
+                                }
 
-                                Field fragmentField = op.getClass().getDeclaredField("fragment");
-                                fragmentField.setAccessible(true);
-                                Object fragmentObject = fragmentField.get(op);
-                                if (fragmentObject instanceof QMUIFragment) {
-                                    mModifiedFragment = (QMUIFragment) fragmentObject;
-                                    ViewGroup container = getBaseFragmentActivity().getFragmentContainer();
-                                    mModifiedFragment.isCreateForSwipeBack = true;
-                                    View baseView = mModifiedFragment.onCreateView(LayoutInflater.from(getContext()), container, null);
-                                    mModifiedFragment.isCreateForSwipeBack = false;
-                                    if (baseView != null) {
-                                        addViewInSwipeBack(container, baseView, 0);
-                                        handleChildFragmentListWhenSwipeBackStart(baseView);
-                                        SwipeBackLayout.offsetInEdgeTouch(baseView, edgeFlag,
-                                                Math.abs(backViewInitOffset()));
+
+                                Field fragmentField = Utils.getOpFragmentField(op);
+                                if (fragmentField != null) {
+                                    fragmentField.setAccessible(true);
+                                    Object fragmentObject = fragmentField.get(op);
+                                    if (fragmentObject instanceof QMUIFragment) {
+                                        mModifiedFragment = (QMUIFragment) fragmentObject;
+                                        ViewGroup container = getBaseFragmentActivity().getFragmentContainer();
+                                        mModifiedFragment.isCreateForSwipeBack = true;
+                                        View baseView = mModifiedFragment.onCreateView(LayoutInflater.from(getContext()), container, null);
+                                        mModifiedFragment.isCreateForSwipeBack = false;
+                                        if (baseView != null) {
+                                            addViewInSwipeBack(container, baseView, 0);
+                                            handleChildFragmentListWhenSwipeBackStart(mModifiedFragment, baseView);
+                                            SwipeBackLayout.offsetInSwipeBack(baseView, edgeFlag,
+                                                    Math.abs(backViewInitOffset()));
+                                        }
                                     }
                                 }
                             }
+                        } catch (IllegalAccessException e) {
+                            e.printStackTrace();
                         }
+                        return false;
                     }
 
+                    @Override
+                    public boolean needReNameTag() {
+                        return false;
+                    }
 
-                } catch (NoSuchFieldException e) {
-                    e.printStackTrace();
-                } catch (IllegalAccessException e) {
-                    e.printStackTrace();
-                }
+                    @Override
+                    public String newTagName() {
+                        return null;
+                    }
+                });
             } else if (getParentFragment() == null) {
                 Activity currentActivity = getActivity();
                 if (currentActivity != null) {
@@ -489,7 +572,7 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
                                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                     }
                     mSwipeBackgroundView.bind(prevActivity, currentActivity, restoreSubWindowWhenDragBack());
-                    SwipeBackLayout.offsetInEdgeTouch(mSwipeBackgroundView, edgeFlag,
+                    SwipeBackLayout.offsetInSwipeBack(mSwipeBackgroundView, edgeFlag,
                             Math.abs(backViewInitOffset()));
                 }
             }
@@ -528,19 +611,23 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
         }
 
 
-        private void handleChildFragmentListWhenSwipeBackStart(View baseView) throws
-                NoSuchFieldException, IllegalAccessException {
+        private void handleChildFragmentListWhenSwipeBackStart(Fragment parentFragment, View baseView) throws IllegalAccessException {
             // handle issue #235
             if (baseView instanceof ViewGroup) {
                 ViewGroup childMainContainer = (ViewGroup) baseView;
-                FragmentManager childFragmentManager = mModifiedFragment.getChildFragmentManager();
+                FragmentManager childFragmentManager = parentFragment.getChildFragmentManager();
                 List<Fragment> childFragmentList = childFragmentManager.getFragments();
                 int childContainerId = 0;
                 ViewGroup childContainer = null;
                 for (Fragment fragment : childFragmentList) {
                     if (fragment instanceof QMUIFragment) {
                         QMUIFragment qmuiFragment = (QMUIFragment) fragment;
-                        Field containerIdField = Fragment.class.getDeclaredField("mContainerId");
+                        Field containerIdField = null;
+                        try {
+                            containerIdField = Fragment.class.getDeclaredField("mContainerId");
+                        } catch (NoSuchFieldException e) {
+                            continue;
+                        }
                         containerIdField.setAccessible(true);
                         int containerId = containerIdField.getInt(qmuiFragment);
                         if (containerId != 0) {
@@ -554,6 +641,7 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
                                         LayoutInflater.from(childContainer.getContext()), childContainer, null);
                                 qmuiFragment.isCreateForSwipeBack = false;
                                 addViewInSwipeBack(childContainer, childView);
+                                handleChildFragmentListWhenSwipeBackStart(fragment, childView);
                             }
                         }
                     }
@@ -631,6 +719,7 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
                 mCacheSwipeBackLayout = swipeBackLayout;
             } else {
                 swipeBackLayout = mCacheSwipeBackLayout;
+                mCacheRootView.setTag(R.id.qmui_arch_reused_layout, true);
             }
         }
 
@@ -656,24 +745,74 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
         popBackStack();
     }
 
+    /**
+     * pop back
+     */
     protected void popBackStack() {
-        if (mEnterAnimationStatus != ANIMATION_ENTER_STATUS_END) {
-            return;
-        }
-
-        if(checkStateLoss("popBackStack")){
+        if (checkPopBack()) {
             getBaseFragmentActivity().popBackStack();
         }
     }
 
+    /**
+     * pop back to a class type fragment
+     *
+     * @param cls the target fragment class type
+     */
+    protected void popBackStack(Class<QMUIFragment> cls) {
+        if (checkPopBack()) {
+            getBaseFragmentActivity().popBackStack(cls);
+        }
+    }
 
-    private boolean checkStateLoss(String logName){
+    /**
+     * pop back to a non-class type Fragment
+     *
+     * @param cls the target fragment class type
+     */
+    protected void popBackStackInclusive(Class<QMUIFragment> cls) {
+        if (checkPopBack()) {
+            getBaseFragmentActivity().popBackStackInclusive(cls);
+        }
+    }
+
+    private boolean checkPopBack() {
+        if (!isResumed() || mEnterAnimationStatus != ANIMATION_ENTER_STATUS_END) {
+            return false;
+        }
+        return checkStateLoss("popBackStack");
+    }
+
+    protected void popBackStackAfterResume() {
+        if (isResumed() && mEnterAnimationStatus != ANIMATION_ENTER_STATUS_END) {
+            popBackStack();
+        } else {
+            runAfterAnimation(new Runnable() {
+                @Override
+                public void run() {
+                    if (isResumed()) {
+                        popBackStack();
+                    } else {
+                        runAfterResumed(new Runnable() {
+                            @Override
+                            public void run() {
+                                popBackStack();
+                            }
+                        });
+                    }
+                }
+            }, true);
+        }
+    }
+
+
+    private boolean checkStateLoss(String logName) {
         FragmentManager fragmentManager = getFragmentManager();
-        if(fragmentManager == null){
+        if (fragmentManager == null) {
             QMUILog.d(TAG, logName + " can not be invoked because fragmentManager == null");
             return false;
         }
-        if(fragmentManager.isStateSaved()){
+        if (fragmentManager.isStateSaved()) {
             QMUILog.d(TAG, logName + " can not be invoked after onSaveInstanceState");
             return false;
         }
@@ -691,14 +830,23 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
 
     @Override
     public Animation onCreateAnimation(int transit, boolean enter, int nextAnim) {
-        if (!enter && getParentFragment() != null && getParentFragment().isRemoving()) {
-            // This is a workaround for the bug where child fragments disappear when
+        if (!enter) {
+            // This is a workaround for the bug where child value disappear when
             // the parent is removed (as all children are first removed from the parent)
             // See https://code.google.com/p/android/issues/detail?id=55228
-            Animation doNothingAnim = new AlphaAnimation(1, 1);
-            int duration = getResources().getInteger(R.integer.qmui_anim_duration);
-            doNothingAnim.setDuration(duration);
-            return doNothingAnim;
+            Fragment rootParentFragment = null;
+            Fragment parentFragment = getParentFragment();
+            while (parentFragment != null) {
+                rootParentFragment = parentFragment;
+                parentFragment = parentFragment.getParentFragment();
+            }
+            if (rootParentFragment != null && rootParentFragment.isRemoving()) {
+                Animation doNothingAnim = new AlphaAnimation(1, 1);
+                int duration = getResources().getInteger(R.integer.qmui_anim_duration);
+                doNothingAnim.setDuration(duration);
+                return doNothingAnim;
+            }
+
         }
         Animation animation = null;
         if (enter) {
@@ -750,6 +898,19 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
      */
     protected abstract View onCreateView();
 
+
+    /**
+     * Corresponding to {@link #onCreateView()}, it called only when new UI (not cached UI)
+     * is created by {@link #onCreateView()}.
+     * It may be used to bind views to fragment and dynamically create child views such as
+     * {@link QMUITopBar#addLeftBackImageButton()}
+     *
+     * @param rootView the view created by {@link #onCreateView()}
+     */
+    protected void onViewCreated(@NonNull View rootView) {
+
+    }
+
     /**
      * Will be performed in onStart
      *
@@ -771,7 +932,6 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
     }
 
     /**
-     *
      * @return the init offset for backView for Parallax scrolling
      */
     protected int backViewInitOffset() {
@@ -815,7 +975,29 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
         if (ok) {
             runnable.run();
         } else {
+            if (mDelayRenderRunnableList == null) {
+                mDelayRenderRunnableList = new ArrayList<>(4);
+            }
             mDelayRenderRunnableList.add(runnable);
+        }
+    }
+
+    /**
+     * some action, such as {@link #popBackStack()}, can not't invoked duration fragment-lifecycle,
+     * then we can call this method to ensure these actions is invoked after resumed.
+     * one use case is to call {@link #popBackStackAfterResume()} in {@link #onFragmentResult(int, int, Intent)}
+     *
+     * @param runnable
+     */
+    public void runAfterResumed(Runnable runnable) {
+        Utils.assertInMainThread();
+        if (isResumed()) {
+            runnable.run();
+        } else {
+            if (mPostResumeRunnableList == null) {
+                mPostResumeRunnableList = new ArrayList<>(4);
+            }
+            mPostResumeRunnableList.add(runnable);
         }
     }
 
@@ -828,13 +1010,16 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
             throw new IllegalAccessError("don't call #onEnterAnimationEnd() directly");
         }
         mCalled = true;
-        if (mDelayRenderRunnableList.size() > 0) {
-            for (int i = 0; i < mDelayRenderRunnableList.size(); i++) {
-                mDelayRenderRunnableList.get(i).run();
-            }
-            mDelayRenderRunnableList.clear();
-        }
         mEnterAnimationStatus = ANIMATION_ENTER_STATUS_END;
+        if (mDelayRenderRunnableList != null) {
+            ArrayList<Runnable> list = mDelayRenderRunnableList;
+            mDelayRenderRunnableList = null;
+            if (!list.isEmpty()) {
+                for (Runnable runnable : list) {
+                    runnable.run();
+                }
+            }
+        }
     }
 
     @Override
@@ -847,6 +1032,13 @@ public abstract class QMUIFragment extends Fragment implements QMUIFragmentLazyL
             mSwipeBackgroundView.unBind();
             mSwipeBackgroundView = null;
         }
+
+        // help gc, sometimes user may hold fragment instance in somewhere,
+        // then these objects can not be released in time.
+        mCacheSwipeBackLayout = null;
+        mCacheRootView = null;
+        mDelayRenderRunnableList = null;
+        mCheckPostResumeRunnable = null;
     }
 
     @Override

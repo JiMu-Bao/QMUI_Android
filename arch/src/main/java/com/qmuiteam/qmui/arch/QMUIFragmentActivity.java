@@ -16,8 +16,11 @@
 
 package com.qmuiteam.qmui.arch;
 
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentManager;
 import android.support.v4.app.FragmentTransaction;
@@ -25,6 +28,10 @@ import android.util.Log;
 import android.view.KeyEvent;
 import android.widget.FrameLayout;
 
+import com.qmuiteam.qmui.QMUILog;
+import com.qmuiteam.qmui.arch.annotation.DefaultFirstFragment;
+import com.qmuiteam.qmui.arch.first.FirstFragmentFinder;
+import com.qmuiteam.qmui.arch.first.FirstFragmentFinders;
 import com.qmuiteam.qmui.util.QMUIStatusBarHelper;
 import com.qmuiteam.qmui.widget.QMUIWindowInsetLayout;
 
@@ -35,8 +42,11 @@ import java.lang.reflect.Field;
  * Created by cgspine on 15/9/14.
  */
 public abstract class QMUIFragmentActivity extends InnerBaseActivity {
+    public static final String QMUI_INTENT_DST_FRAGMENT = "qmui_intent_dst_fragment";
+    public static final String QMUI_INTENT_FRAGMENT_ARG = "qmui_intent_fragment_arg";
     private static final String TAG = "QMUIFragmentActivity";
-    private QMUIWindowInsetLayout mFragmentContainer;
+    private RootView mFragmentContainer;
+    private boolean mIsFirstFragmentAddedByAnnotation = false;
 
     @SuppressWarnings("SameReturnValue")
     protected abstract int getContextViewId();
@@ -45,9 +55,77 @@ public abstract class QMUIFragmentActivity extends InnerBaseActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         QMUIStatusBarHelper.translucent(this);
-        mFragmentContainer = new QMUIWindowInsetLayout(this);
+        mFragmentContainer = new RootView(this);
         mFragmentContainer.setId(getContextViewId());
         setContentView(mFragmentContainer);
+        mIsFirstFragmentAddedByAnnotation = false;
+        if (savedInstanceState == null) {
+            long start = System.currentTimeMillis();
+            FirstFragmentFinder finder = FirstFragmentFinders.getInstance().get(getClass());
+            Intent intent = getIntent();
+            Class<? extends QMUIFragment> firstFragmentClass = null;
+            if (finder != null) {
+                int dstFragment = intent.getIntExtra(QMUI_INTENT_DST_FRAGMENT, -1);
+                firstFragmentClass = finder.getFragmentClassById(dstFragment);
+            }
+
+            if (firstFragmentClass == null) {
+                firstFragmentClass = getDefaultFirstFragment();
+            }
+
+            if (firstFragmentClass != null) {
+                QMUIFragment firstFragment = instantiationFirstFragment(firstFragmentClass, intent);
+                if (firstFragment != null) {
+                    getSupportFragmentManager()
+                            .beginTransaction()
+                            .add(getContextViewId(), firstFragment, firstFragment.getClass().getSimpleName())
+                            .addToBackStack(firstFragment.getClass().getSimpleName())
+                            .commit();
+                    mIsFirstFragmentAddedByAnnotation = true;
+                }
+            }
+            Log.i(TAG, "the time it takes to inject first fragment from annotation is " + (System.currentTimeMillis() - start));
+        }
+    }
+
+    /**
+     * used for subclasses to see if the parent class initializes the first fragment。
+     * it must be called after super.onCreate in subclasses.
+     *
+     * @return true if first fragment is initialized.
+     */
+    protected boolean isFirstFragmentAddedByAnnotation() {
+        return mIsFirstFragmentAddedByAnnotation;
+    }
+
+    protected Class<? extends QMUIFragment> getDefaultFirstFragment() {
+        Class<?> cls = getClass();
+        while (cls != null && cls != QMUIFragmentActivity.class && QMUIFragmentActivity.class.isAssignableFrom(cls)) {
+            if (cls.isAnnotationPresent(DefaultFirstFragment.class)) {
+                DefaultFirstFragment defaultFirstFragment = cls.getAnnotation(DefaultFirstFragment.class);
+                if (defaultFirstFragment != null) {
+                    return defaultFirstFragment.value();
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return null;
+    }
+
+    protected QMUIFragment instantiationFirstFragment(Class<? extends QMUIFragment> cls, Intent intent) {
+        try {
+            QMUIFragment fragment = cls.newInstance();
+            Bundle args = intent.getBundleExtra(QMUI_INTENT_FRAGMENT_ARG);
+            if (args != null) {
+                fragment.setArguments(args);
+            }
+            return fragment;
+        } catch (IllegalAccessException e) {
+            QMUILog.d(TAG, "Can not access " + cls.getName() + " for first fragment");
+        } catch (InstantiationException e) {
+            QMUILog.d(TAG, "Can not instance " + cls.getName() + " for first fragment");
+        }
+        return null;
     }
 
     public FrameLayout getFragmentContainer() {
@@ -113,21 +191,21 @@ public abstract class QMUIFragmentActivity extends InnerBaseActivity {
             public boolean handle(Object op) {
                 Field cmdField = null;
                 try {
-                    cmdField = op.getClass().getDeclaredField("cmd");
+                    cmdField = Utils.getOpCmdField(op);
                     cmdField.setAccessible(true);
                     int cmd = (int) cmdField.get(op);
                     if (cmd == 1) {
                         if (useNewTransitionConfigWhenPop) {
-                            Field popEnterAnimField = op.getClass().getDeclaredField("popEnterAnim");
+                            Field popEnterAnimField = Utils.getOpPopEnterAnimField(op);
                             popEnterAnimField.setAccessible(true);
                             popEnterAnimField.set(op, transitionConfig.popenter);
 
-                            Field popExitAnimField = op.getClass().getDeclaredField("popExitAnim");
+                            Field popExitAnimField = Utils.getOpPopExitAnimField(op);
                             popExitAnimField.setAccessible(true);
                             popExitAnimField.set(op, transitionConfig.popout);
                         }
 
-                        Field oldFragmentField = op.getClass().getDeclaredField("fragment");
+                        Field oldFragmentField = Utils.getOpFragmentField(op);
                         oldFragmentField.setAccessible(true);
                         Object fragmentObj = oldFragmentField.get(op);
                         oldFragmentField.set(op, fragment);
@@ -178,7 +256,7 @@ public abstract class QMUIFragmentActivity extends InnerBaseActivity {
         Log.i(TAG, "popBackStack: getSupportFragmentManager().getBackStackEntryCount() = " + getSupportFragmentManager().getBackStackEntryCount());
         if (getSupportFragmentManager().getBackStackEntryCount() <= 1) {
             QMUIFragment fragment = getCurrentFragment();
-            if (fragment == null) {
+            if (fragment == null || QMUISwipeBackActivityManager.getInstance().canSwipeBack()) {
                 finish();
                 return;
             }
@@ -227,5 +305,60 @@ public abstract class QMUIFragmentActivity extends InnerBaseActivity {
      */
     public void popBackStackInclusive(Class<? extends QMUIFragment> clazz) {
         getSupportFragmentManager().popBackStack(clazz.getSimpleName(), FragmentManager.POP_BACK_STACK_INCLUSIVE);
+    }
+
+    public static Intent intentOf(@NonNull Context context,
+                                  @NonNull Class<? extends QMUIFragmentActivity> targetActivity,
+                                  @NonNull Class<? extends QMUIFragment> firstFragment) {
+        return intentOf(context, targetActivity, firstFragment, null);
+    }
+
+    /**
+     * create a intent for a new QMUIFragmentActivity
+     *
+     * @param context        Generally it is activity
+     * @param targetActivity target activity class
+     * @param firstFragment  first fragment in target activity
+     * @param fragmentArgs   args for first fragment
+     * @return
+     */
+    public static Intent intentOf(@NonNull Context context,
+                                  @NonNull Class<? extends QMUIFragmentActivity> targetActivity,
+                                  @NonNull Class<? extends QMUIFragment> firstFragment,
+                                  @Nullable Bundle fragmentArgs) {
+        Intent intent = new Intent(context, targetActivity);
+        FirstFragmentFinder finder = FirstFragmentFinders.getInstance().get(targetActivity);
+        int dstId = FirstFragmentFinder.NO_ID;
+        if (finder != null) {
+            dstId = finder.getIdByFragmentClass(firstFragment);
+        }
+        if (dstId == FirstFragmentFinder.NO_ID) {
+            String fragmentName = firstFragment.getName();
+            throw new RuntimeException("Can not find ID for " + fragmentName +
+                    "; You must add annotation MayFirstFragment which include " + targetActivity.getName() +
+                    " in " + fragmentName + " .");
+        }
+        intent.putExtra(QMUI_INTENT_DST_FRAGMENT, dstId);
+        if (fragmentArgs != null) {
+            intent.putExtra(QMUI_INTENT_FRAGMENT_ARG, fragmentArgs);
+        }
+        return intent;
+    }
+
+
+    private static class RootView extends QMUIWindowInsetLayout {
+
+        public RootView(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            super.onLayout(changed, left, top, right, bottom);
+            for (int i = 0; i < getChildCount(); i++) {
+                SwipeBackLayout.updateLayoutInSwipeBack(getChildAt(i));
+
+            }
+        }
     }
 }

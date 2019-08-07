@@ -17,6 +17,7 @@
 package com.qmuiteam.qmui.nestedScroll;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.view.NestedScrollingChild2;
@@ -29,12 +30,13 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
+import com.qmuiteam.qmui.util.QMUILangHelper;
 import com.qmuiteam.qmui.util.QMUIViewOffsetHelper;
-
-import java.io.Serializable;
 
 public class QMUIContinuousNestedTopDelegateLayout extends FrameLayout implements
         NestedScrollingChild2, NestedScrollingParent2, IQMUIContinuousNestedTopView {
+
+    public static final String KEY_SCROLL_INFO_OFFSET = "@qmui_scroll_info_top_dl_offset";
 
     private OnScrollNotifier mScrollNotifier;
     private View mHeaderView;
@@ -282,7 +284,8 @@ public class QMUIContinuousNestedTopDelegateLayout extends FrameLayout implement
                 }
                 return dyUnconsumed;
             } else {
-                int beforeRange = getPaddingTop() + (mHeaderView == null ? 0 : mHeaderView.getHeight());
+                int beforeRange = Math.min(mOffsetRange,
+                        getPaddingTop() + (mHeaderView == null ? 0 : mHeaderView.getHeight()));
                 if (dyUnconsumed == Integer.MAX_VALUE) {
                     offsetTo(beforeRange);
                 } else if (mOffsetCurrent + dyUnconsumed <= beforeRange) {
@@ -320,7 +323,8 @@ public class QMUIContinuousNestedTopDelegateLayout extends FrameLayout implement
                 }
                 return dyUnconsumed;
             }
-            int afterRange = mOffsetRange - getPaddingBottom() - (mFooterView == null ? 0 : mFooterView.getHeight());
+            int afterRange = Math.max(0,
+                    mOffsetRange - getPaddingBottom() - (mFooterView == null ? 0 : mFooterView.getHeight()));
             if (dyUnconsumed == Integer.MIN_VALUE) {
                 offsetTo(afterRange);
             } else if (mOffsetCurrent + dyUnconsumed > afterRange) {
@@ -384,28 +388,19 @@ public class QMUIContinuousNestedTopDelegateLayout extends FrameLayout implement
     }
 
     @Override
-    public Object saveScrollInfo() {
-        return new ScrollInfo(-mOffsetCurrent, mDelegateView == null ? null : mDelegateView.saveScrollInfo());
-    }
-
-    @Override
-    public void restoreScrollInfo(Object scrollInfo) {
-        if (scrollInfo instanceof ScrollInfo) {
-            ScrollInfo si = (ScrollInfo) scrollInfo;
-            offsetTo(-si.topBottomOffset);
-            if (mDelegateView != null) {
-                mDelegateView.restoreScrollInfo(((ScrollInfo) scrollInfo).delegateScrollInfo);
-            }
+    public void saveScrollInfo(@NonNull Bundle bundle) {
+        bundle.putInt(KEY_SCROLL_INFO_OFFSET, -mOffsetCurrent);
+        if (mDelegateView != null) {
+            mDelegateView.saveScrollInfo(bundle);
         }
     }
 
-    public static class ScrollInfo implements Serializable {
-        public int topBottomOffset;
-        public Object delegateScrollInfo;
-
-        public ScrollInfo(int topBottomOffset, Object delegateScrollInfo) {
-            this.topBottomOffset = topBottomOffset;
-            this.delegateScrollInfo = delegateScrollInfo;
+    @Override
+    public void restoreScrollInfo(@NonNull Bundle bundle) {
+        int offset = bundle.getInt(KEY_SCROLL_INFO_OFFSET, 0);
+        offsetTo(QMUILangHelper.constrain(-offset, 0, getContainerOffsetRange()));
+        if (mDelegateView != null) {
+            mDelegateView.restoreScrollInfo(bundle);
         }
     }
 
@@ -549,11 +544,12 @@ public class QMUIContinuousNestedTopDelegateLayout extends FrameLayout implement
                 offsetTo(topMargin);
             }
         } else if (unconsumed < 0) {
-            int b = mOffsetRange - getPaddingBottom() - (mFooterView != null ? mFooterView.getHeight() : 0);
+            int bottomMargin = getPaddingBottom() + (mFooterView != null ? mFooterView.getHeight() : 0);
+            int b = mOffsetRange - bottomMargin;
             if (mOffsetCurrent + unconsumed >= b) {
                 offsetTo(mOffsetCurrent + unconsumed);
                 consumed[1] += unconsumed;
-            } else if (mOffsetRange > b) {
+            } else if (mOffsetCurrent > b) {
                 consumed[1] += b - mOffsetCurrent;
                 offsetTo(b);
             }
